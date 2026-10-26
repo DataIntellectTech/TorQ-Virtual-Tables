@@ -43,7 +43,8 @@ for a in "$@"; do
 done
 
 SELFCONTAINED="vt-partition-test vt-rollover-test vt-newtable-test vt-restart-test
-               vt-inflight-test vt-damage-test vt-multistack-test vt-wdbrestart-test
+               vt-inflight-test vt-damage-test vt-multistack-test vt-livepart-test
+               vt-wdbrestart-test
                vt-compat-test vt-diskfull-test"
 NEEDSTACK="vt-replay-test vt-symdomain-test vt-collision-test vt-tprestart-test"
 
@@ -99,6 +100,9 @@ echo "  logs             : $LOGDIR"
 echo ""
 echo "self-contained (build their own database, safe any time)"
 for t in $SELFCONTAINED; do run "$t" q "testfiles/$t.q"; done
+# generates a multi-stack topology from the pack's own config and starts it for real, on
+# its own ports (6400/6500), so it is safe alongside a dev stack
+run vt-vtstacks-test ./testfiles/vt-vtstacks-test.sh
 
 echo ""
 if [ "$QUICK" = 1 ]; then

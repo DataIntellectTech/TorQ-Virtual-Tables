@@ -104,6 +104,58 @@ h"select n:count i by sym from trade"
 h"select from trade where sym=`AMD, date=.vtidb.current"
 ```
 
+### Several capture stacks
+
+`VTSTACKS=n` starts **n** complete capture stacks — each with its own tickerplant, feed and
+writer, and each writing into its **own database root**. `VTIDBS=m` starts **m** readers, and
+every reader attaches every root, so any one of them answers for the whole estate. Nothing
+needs editing to get either:
+
+```sh
+VTSTACKS=2 ./deploy/bin/torq.sh start all               # two stacks, one reader
+VTSTACKS=3 VTIDBS=2 ./deploy/bin/torq.sh start all      # three stacks, two readers
+./deploy/bin/torq.sh summary                            # remembers the shape
+./deploy/bin/torq.sh stop all                           # stops all of it
+```
+
+Separate roots are the point, not an option. Two writers sharing one root compete for the same
+IO, and — worse — TorQ's pre-replay delete removes the whole date directory, so restarting one
+writer destroys the other's day. A root per writer removes both by construction.
+
+Anything other than one stack and one reader is **generated** into
+`$TORQDATAHOME/process-generated.csv` when `setenv.sh` runs; the shipped `appconfig/process.csv`
+is used unchanged for the single-stack case, so the default deployment does not depend on the
+generator at all. Ports follow from `KDBBASEPORT`: stack *i* occupies the block at `+100*(i-1)`
+(tickerplant `+0`, writer `+5`, feed `+14`) and reader *j* sits at `+30` of block *j*.
+
+A reader holds about **three sockets per capture stack**, so a licence that caps concurrent
+connections also caps the topology — past the cap a reader keeps capturing but refuses clients
+with `'conn`. `setenv.sh` reads the cap from the licence and warns only if the topology would
+exceed it; on the kdb-x community licence (cap 8) that means two stacks is the practical limit,
+and on a licence reporting `0W` there is no limit at all. See §8.3.2.
+
+Both numbers are recorded in `$TORQDATAHOME/.vtstacks` and `.vtidbs`, so they only have to be
+given once. They have to be remembered rather than re-typed: `torq.sh` only knows about the
+processes in the file it picked, so a `stop all` that forgot would leave processes running and
+unmanaged. The markers live with the database, not the install, so two data directories can be
+running different topologies at once.
+
+Each feed takes a **disjoint slice** of the instrument universe — stack *i* of *n* takes every
+instrument whose index is congruent to *i-1* mod *n*. That is required, not cosmetic: the same
+`(date;instrument)` captured by two stacks is served **twice**, with no error and nothing in any
+log. Deriving the slices by arithmetic rather than from hand-written lists makes disjointness a
+property of the configuration rather than of somebody remembering.
+
+Two things still have to be got right with several stacks, and `setenv.sh` emits both:
+
+* **Each writer and feed is pinned to its own tickerplant by name.** A lookup by process *type*
+  takes whichever is found first, so an unpinned writer can bind to another stack's tickerplant,
+  capture its instruments, and stay healthy while doing it.
+* **Each reader carries `.vtidb.multiwriter`.** A reader holds *one* live partition across every
+  root it attaches, so without it the first stack to roll closes a date another stack is still
+  filling, and every directory that stack creates afterwards is invisible. Separate roots do
+  **not** remove this — see §8.3 of the design doc.
+
 The partition column is exposed under the name in `partitioncol` (`appconfig/settings/idb.q`),
 set here to `sym` so queries read the same as against a conventional database.
 
@@ -221,7 +273,7 @@ installlatest.sh           download and unpack the latest TorQ release; --deploy
                            -stackid $KDBBASEPORT, so other TorQ stacks on the machine are
                            left alone even though they share the default procnames
 selftest.sh                end-to-end smoke test (testfiles/selftest.q)
-regress.sh                 runs the sixteen assertion tests in testfiles/
+regress.sh                 runs the assertion tests in testfiles/
 loadtest.sh                throughput run on a clean stack (testfiles/loadtest.q). DESTRUCTIVE:
                            it does rm -rf var to start from a known state, so run it on a
                            throwaway copy unless you mean to lose the database
@@ -229,21 +281,23 @@ compress.sh                the weekend compression job; --dry-run and --test
 database.q                 the schema the tickerplant loads
 
 appconfig/
-  process.csv              the process list
+  process.csv              the process list - one capture stack, one reader. Anything else
+                           is generated into $TORQDATAHOME/process-generated.csv by setenv.sh
   sort.csv                 declares the partition column (sym)
   compressionconfig.csv    the age tier: how old a partition must be before compression
 
   passwords/               accesslist.txt and feed.txt - one entry per proctype this pack
                            runs, plus admin for qcon
   settings/default.q       settings shared by every process
-  settings/wdb.q           WDB config, including symdomain (see §8.3.1 for multi-stack)
+  settings/wdb.q           WDB config, including savedir and symdomain (§8.3)
   settings/idb.q           IDB config
   settings/compression.q   the size gate (.cmp.minfilesize)
-  settings/feed.q          demo feed config
+  settings/feed.q          demo feed config, including the universe slice each stack takes
   settings/segmentedtickerplant.q
 
 code/
   wdb/vtwrite.q            the writer overrides this design needs (see §4 of the doc)
+  wdb/vttickerplant.q      binds a writer to ONE named tickerplant (§8.3)
   processes/vtidb.q        the IDB reader (see §5 of the doc)
   processes/vtcompress.q   the compression job and its --dry-run report (see §7 of the doc)
   tick/feed.q              demo feed, FSP trade/quote generator

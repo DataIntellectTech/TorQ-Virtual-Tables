@@ -1,19 +1,29 @@
 / Market-data feed, following the Finance Starter Pack generator.
-/ .
-/ Publishes trades and quotes for a small equity universe, with deliberately skewed volumes
-/ so some symbols are far busier than others - which is what makes the date+instrument
-/ layout worth looking at, since partition sizes then vary the way they do in real data.
-/ .
+/ Publishes trades and quotes for a small equity universe, with skewed volumes so partition
+/ sizes vary the way they do in real data.
 / Configured by environment:
 /   REPLAYINTERVAL   time between publishes (default 200ms)
-/ .
-/ NOTE a line containing only "/" opens a block comment in q, so every comment line here
-/ carries text after the slash.
 
 REPLAYINTERVAL:@[value;`REPLAYINTERVAL;0D00:00:00.200];
 
-syms:`AMD`AIG`AAPL`DELL`DOW`GOOG`HPQ`INTC`IBM`MSFT;
-px:33 27 84 12 20 72 36 51 42 29f;        / starting price per symbol
+/ the instrument universe. Stack i of n takes every instrument whose index is congruent to
+/ i-1 mod n, so the slices are disjoint by arithmetic. §8.3
+/ stackid, nstacks and universe are declared in appconfig/settings/feed.q so the process
+/ file can set them.
+universe:@[value;`.feed.universe;`AMD`AIG`AAPL`DELL`DOW`GOOG`HPQ`INTC`IBM`MSFT,
+                                 `BARC`HSBA`LLOY`NWG`STAN`VOD`BP`SHEL`GSK`AZN];
+vtslice:{[u;id;n]
+  if[n<=1; :u];
+  if[not count r:u where (id-1)=(til count u) mod n;
+    .lg.e[`feed;"stack ",string[id]," of ",string[n]," has no instruments - the universe ",
+                "holds only ",string[count u]]];
+  r
+  };
+syms:@[value;`syms;vtslice[universe;@[value;`.feed.stackid;1];@[value;`.feed.nstacks;1]]];
+/ starting price per instrument. The stock ten are hand-picked; a configured universe of a
+/ different length gets spread-out deterministic prices instead, so only the symbols need setting.
+px:@[value;`px;33 27 84 12 20 72 36 51 42 29f];
+if[not count[px]=count syms; px:10+`float$(7*til count syms) mod 90];
 modes:" ABHILNORYZ";                      / quote mode
 conds:" 89ABCEGJKLNOPRTWZ";               / trade condition
 exch:"NONNONONNN";                        / exchange, one per symbol
@@ -77,11 +87,17 @@ mkquote:{[n]
    n?modes; exch i; n?srcs)
   };
 
-/ Resolve the handle on EVERY publish rather than caching one at startup. A cached handle dies
-/ with the tickerplant, and .servers reconnecting updates its own table, not a copy taken at
-/ load time - so a feed written the other way writes to a dead descriptor while every process
-/ stays up and looks healthy. See testfiles/vt-tprestart-test.q
-tphandle:{[] .servers.gethandlebytype[`segmentedtickerplant;`any] };
+/ which tickerplant to publish to; ` takes whichever one is found first. Declared in
+/ appconfig/settings/feed.q so the process file can override it. §8.3
+tpname:@[value;`.feed.tickerplantname;`];
+
+/ resolve the handle on every publish rather than caching one: a cached handle dies with the
+/ tickerplant. Both branches return an empty int list, not a null handle - send tests count
+tphandle:{[]
+  if[null tpname; :.servers.gethandlebytype[`segmentedtickerplant;`any]];
+  r:.servers.getservers[`procname;tpname;()!();1b;1b];
+  $[count r; first exec w from r; 0#0Ni]
+  };
 
 send:{[]
   tp:tphandle[];

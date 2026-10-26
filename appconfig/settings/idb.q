@@ -2,30 +2,26 @@
 // see docs/virtual-table-capture-pack.md §5
 
 \d .vtidb
-roots:enlist hsym`$getenv`KDBDB          // database roots to scan. a list rather than an atom
-                                         // so one reader can serve several capture stacks (§8.3)
-tabs:`                                   // ` = discover the table list from disk. Scans the
-                                         // live partition only once the catalogue is warm, so
-                                         // the cost does not grow with retention. A table
-                                         // added to an already-rolled date needs dropcache[]
-                                         // (6.1). Set explicitly to restrict, e.g. `trade
+roots:enlist hsym`$getenv`KDBDB          // database roots to scan. A list, so one reader can
+                                         // serve several capture stacks. §8.3
+tabs:`                                   // ` = discover the table list from disk. Set
+                                         // explicitly to restrict, e.g. `trade
 historydays:0W                           // how many days back to attach. 0W = everything
-sweep:0D00:00:30                         // backstop rescan. The primary path is the wdb's
-                                         // notification (§4.1); this only bounds a dropped
-                                         // message, so it is deliberately slack
-symsweep:0D00:00:01                      // how often to check the enumeration domain. A new
-                                         // symbol VALUE in an existing partition creates no
-                                         // directory, so the writer never announces it and it
-                                         // reads as null until reloaded (§5.4). One hcount per
-                                         // root, so this can be fast
+sweep:0D00:00:30                         // backstop rescan behind the wdb's notification;
+                                         // deliberately slack. §4.1
+symsweep:0D00:00:01                      // how often to reload the enumeration domain; a new
+                                         // symbol value announces nothing. §5.4
 
-partitioncol:`sym                       // name the partition column is exposed under. Not
-                                         // stored on disk, so it cannot be derived: it must
-                                         // match the schema or client queries will not port
+partitioncol:`sym                        // name the partition column is exposed under. Not
+                                         // stored on disk, so it must match the schema
+multiwriter:@[value;`multiwriter;0b]     // hold the live partition at the earliest date any
+                                         // writer still has open. One round trip per writer
+                                         // per rebuild, so off for a single writer. §8.3
+writertimeout:@[value;`writertimeout;1000]   // ms to wait for a writer's answer
+
 wdbtypes:`wdb
-wdbcheckcycles:3                         // wait this many cycles for the wdb, then start
-wdbconnsleepintv:5                       // anyway - without a writer the sweep keeps the
-                                         // reader current, just slower
+wdbcheckcycles:3                         // cycles to wait for a wdb before starting anyway
+wdbconnsleepintv:5
 
 \d .servers
 CONNECTIONS:`wdb`discovery               // wdb: to register for new-partition notifications
